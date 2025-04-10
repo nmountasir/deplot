@@ -1,0 +1,8 @@
+pandas
+matplotlib
+customtkinter
+numpy
+scipy
+seaborn
+tkcalendar
+ctkdlib
