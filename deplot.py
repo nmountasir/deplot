@@ -139,7 +139,7 @@ class QuantileApp(ctk.CTk):
             variables_menu = tk.Menu(self.menubar, tearoff=0)
             variables_menu.add_command(label="Select variables", command=self.show_variables_selection_window)
             variables_menu.add_command(label="Change target variable", command=self.change_target_variable)
-            variables_menu.add_command(label="Change models to compare", command=self.detect_models)
+            variables_menu.add_command(label="Change models to compare", command=lambda: self.detect_models(regenerate=False))
             self.menubar.add_cascade(label="View", menu=variables_menu)
             self.left_frame = ctk.CTkFrame(self, fg_color='#434343')
             self.left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -301,7 +301,7 @@ class QuantileApp(ctk.CTk):
         target_combobox = ctk.CTkComboBox(left_frame, state='readonly', values=[], command=lambda event: self.update_target_name(target_combobox.get()))
         target_combobox.pack(anchor='w', fill=tk.X)
 
-        validate_button = ctk.CTkButton(left_frame, text='Confirm', command=self.detect_models)
+        validate_button = ctk.CTkButton(left_frame, text='Confirm', command=lambda: self.detect_models(regenerate=True))
         validate_button.pack(anchor='w', pady=10)
 
         right_frame = ctk.CTkFrame(self.dataframe_preview)
@@ -781,21 +781,19 @@ class QuantileApp(ctk.CTk):
         if self.timesteps_axes is not None:
             self.timesteps_axes = self.plot_timesteps(**self.last_plot_params)
 
-    def detect_models(self):
+    def detect_models(self, regenerate=False):
         """ Detect the models in the dataframe. """
-        if self.data is None:
-            self.data = self.df
-            self.all_models = [col.split('error_')[1] for col in self.data.columns if 'error_' in col]
-            if self.target_name is None:
-                messagebox.showerror('Error', 'Please select a target column.')
-            elif len(self.all_models) < 2:
-                messagebox.showerror('Error', "The file does not contain enough models or is in the wrong format.")
-            else:
-                if self.individual_name not in self.data.columns:
-                    self.individual_name = None
-                self.dataframe_preview.destroy()
+        if regenerate:
+            self.data = self.df.copy()
+            self.dataframe_preview.destroy()
+        self.all_models = [col.split('error_')[1] for col in self.data.columns if 'error_' in col]
+        if self.target_name is None:
+            messagebox.showerror('Error', 'Please select a target column.')
+        elif len(self.all_models) < 2:
+            messagebox.showerror('Error', "The file does not contain enough models or is in the wrong format.")
         else:
-            self.all_models = [col.split('error_')[1] for col in self.data.columns if 'error_' in col]
+            if self.individual_name not in self.data.columns:
+                self.individual_name = None
         self.show_model_selection_window()
 
     def show_model_selection_window(self):
@@ -854,6 +852,9 @@ class QuantileApp(ctk.CTk):
             self.selection_window.destroy()
             self.show_model_selection_window()
         else:
+            # check if target variable is datetime like
+            if pd.api.types.is_datetime64_any_dtype(self.data[self.target_name]) or 'date' in self.target_name.lower():
+                self.data[self.target_name] = pd.to_datetime(self.data[self.target_name], format='mixed')
             self.models = selected_models
             self.separator = self.sep
             self.has_index = self.has_index
@@ -1225,6 +1226,8 @@ class QuantileApp(ctk.CTk):
         except KeyError:
             messagebox.showerror('Error', 'An error occured while loading the file, please reload it.')
         self.data = pd.read_csv(self.file_path, sep=self.sep, index_col=0 if self.has_index else None)
+        if pd.api.types.is_datetime64_any_dtype(self.data[self.target_name]) or 'date' in self.target_name.lower():
+            self.data[self.target_name] = pd.to_datetime(self.data[self.target_name], format='mixed')
         self.update_recent_files(file_info)
         self.calculate_max_timesteps()
         self.title(f"DEPlot - {self.file_path} - {self.models[0]} vs {self.models[1]}")

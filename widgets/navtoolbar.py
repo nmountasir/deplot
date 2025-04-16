@@ -70,13 +70,14 @@ class NavToolbar(NavigationToolbar2Tk):
             axis.tick_params(axis='x', colors='black')
             axis.tick_params(axis='y', colors='black')
             # get the colorbar from the figure
-            colorbar = fig.get_axes()[1]
-            colorbar.yaxis.label.set_color('black')
-            colorbar.yaxis.set_tick_params(color='black')
-            for label in colorbar.yaxis.get_ticklabels():
-                label.set_color('black')
-            axis.xaxis.label.set_color('tab:orange')
-            axis.yaxis.label.set_color('tab:green')
+            if len(fig.get_axes()) > 1:
+                colorbar = fig.get_axes()[1]
+                colorbar.yaxis.label.set_color('black')
+                colorbar.yaxis.set_tick_params(color='black')
+                for label in colorbar.yaxis.get_ticklabels():
+                    label.set_color('black')
+                axis.xaxis.label.set_color('tab:orange')
+                axis.yaxis.label.set_color('tab:green')
 
             fig.savefig(fname, format=extension)
 
@@ -86,11 +87,12 @@ class NavToolbar(NavigationToolbar2Tk):
             axis.title.set_color('white')
             axis.tick_params(axis='x', colors='white')
             axis.tick_params(axis='y', colors='white')
-            colorbar.yaxis.label.set_color('white')
-            colorbar.yaxis.set_tick_params(color='white')
-            for label in colorbar.yaxis.get_ticklabels():
-                label.set_color('white')
-            axis.xaxis.label.set_color('tab:orange')
-            axis.yaxis.label.set_color('tab:green')
+            if len(fig.get_axes()) > 1:
+                colorbar.yaxis.label.set_color('white')
+                colorbar.yaxis.set_tick_params(color='white')
+                for label in colorbar.yaxis.get_ticklabels():
+                    label.set_color('white')
+                axis.xaxis.label.set_color('tab:orange')
+                axis.yaxis.label.set_color('tab:green')
         except Exception as e:
             tkinter.messagebox.showerror("Error saving file", str(e))
