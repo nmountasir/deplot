@@ -23,28 +23,6 @@ from scipy.spatial import ConvexHull
 # Set the seaborn theme
 # sns.set_theme()
 
-def tukey_depth(points, query_point):
-    """
-    Calcule la profondeur de Tukey d'un point de requête par rapport à un ensemble de points.
-    
-    :param points: Un tableau numpy de forme (n, d) où n est le nombre de points et d est la dimension.
-    :param query_point: Un tableau numpy de forme (d,) représentant le point de requête.
-    :return: La profondeur de Tukey du point de requête.
-    """
-    n, d = points.shape
-    depths = []
-
-    for i in range(n):
-        direction = points[i] - query_point
-        if np.all(direction == 0):
-            continue
-        direction = direction / np.linalg.norm(direction)
-        projections = np.dot(points - query_point, direction)
-        depth = np.sum(projections >= 0) / n
-        depths.append(depth)
-
-    return min(depths)
-
 class QuantileApp(ctk.CTk):
     """Main application class for the Quantile Evolution Plot."""
     def __init__(self):
@@ -108,12 +86,24 @@ class QuantileApp(ctk.CTk):
     def on_closing(self):
         """Handle the closing of the application."""
         if messagebox.askokcancel("Exit", "Are you sure you want to exit?"):
+            self.is_simulating = False
+            if hasattr(self, 'after_id') and self.after_id:
+                try:
+                    self.after_cancel(self.after_id)
+                except ValueError:
+                    pass
+
             if hasattr(self, 'quantile_canvas'):
-                self.quantile_canvas.get_tk_widget().destroy()
-                self.timesteps_canvas.get_tk_widget().destroy()
-                self.timesteps_frame.destroy()
-            self.destroy()
+                try:
+                    self.quantile_canvas.get_tk_widget().destroy()
+                    self.timesteps_canvas.get_tk_widget().destroy()
+                    self.timesteps_frame.destroy()
+                except Exception:
+                    pass
+            
+            plt.close('all')
             self.quit()
+            self.destroy()
 
     def configure_ui(self):
         """Configure the UI for the application."""
@@ -382,7 +372,7 @@ class QuantileApp(ctk.CTk):
 
         self.variables_selection_window = ctk.CTkToplevel(self)
         self.variables_selection_window.title(f'Select the variables to filter')
-        self.variables_selection_window.geometry('800x600')  # Augmenter la largeur pour inclure le panneau de récapitulatif
+        self.variables_selection_window.geometry('800x600')
 
         variables = [col for col in self.data.columns if 'error' not in col and col != self.individual_name and self.target_name not in col]
         categorical_vars = [col for col in variables if self.data[col].dtype == 'object' and 'date' not in col.lower()]
@@ -527,13 +517,13 @@ class QuantileApp(ctk.CTk):
         for widget in self.selection_frame.winfo_children():
             widget.destroy()
         categories = self.get_categories(var)
-        self.categorical_checkboxes = {}  # Dictionnaire pour stocker les cases à cocher
+        self.categorical_checkboxes = {}
         for category in categories:
             category_var = tk.BooleanVar()
             category_var.set(category in self.categorical_filters.get(var, set()))
             category_check = ctk.CTkCheckBox(self.selection_frame, text=category, variable=category_var, command=lambda var=var, cat=category, category_var=category_var: self.update_categorical_filter(var, cat, category_var.get()))
             category_check.pack(side=tk.TOP, fill=tk.X, expand=False, pady=0)
-            self.categorical_checkboxes[category] = category_check  # Stocker la case à cocher
+            self.categorical_checkboxes[category] = category_check
     
     def show_datetime_filter_widgets(self, var):
         for widget in self.selection_frame.winfo_children():
@@ -754,7 +744,6 @@ class QuantileApp(ctk.CTk):
                 if self.summary_tree.item(item, 'values')[0] == var:
                     self.summary_tree.delete(item)
                     break
-            # Remove the filter from the numerical, categorical, or datetime filters
             if var in self.numerical_filters:
                 self.numerical_filters[var]['min'] = None
                 self.numerical_filters[var]['max'] = None
@@ -794,14 +783,150 @@ class QuantileApp(ctk.CTk):
         else:
             if self.individual_name not in self.data.columns:
                 self.individual_name = None
+        
+        # Pre-generate figures before showing the window
+        self.generate_selection_figures()
         self.show_model_selection_window()
+
+    def generate_selection_figures(self, sort_metric='RMSE', sort_order='Ascending'):
+        """Pre-generate the figures for the model selection window."""
+        # Close existing figures to free memory
+        if hasattr(self, 'selection_fig_scatter') and self.selection_fig_scatter:
+            plt.close(self.selection_fig_scatter)
+        if hasattr(self, 'selection_fig_boxplot') and self.selection_fig_boxplot:
+            plt.close(self.selection_fig_boxplot)
+
+        # --- Data Preparation ---
+        all_models = [col.split('error_')[1] for col in self.data.columns if 'error_' in col]
+        metrics_dict = {}
+        for model in all_models:
+            if sort_metric == 'RMSE':
+                metrics_dict[model] = np.sqrt(np.mean(self.data[f'error_{model}']**2))
+            elif sort_metric == 'MAE':
+                metrics_dict[model] = np.mean(np.abs(self.data[f'error_{model}']))
+        
+        reverse = (sort_order == 'Descending')
+        models_to_plot = sorted(all_models, key=lambda x: metrics_dict[x], reverse=reverse)
+        models_to_plot = models_to_plot[:12]
+        self.selection_models_to_plot = models_to_plot
+        self.selection_metrics_ids = {name: idx+1 for idx, name in enumerate(all_models)}
+
+        # --- Scatter Plots Figure ---
+        self.selection_fig_scatter, axes = plt.subplots(3, 4, figsize=(16, 12))
+        axes = axes.flatten()
+        
+        target_col = self.target_name
+        real_values = self.data[target_col]
+
+        scatter = None
+        for idx, model in enumerate(models_to_plot):
+            ax = axes[idx]
+            pred_col = f'{target_col}_{model}'
+            if pred_col in self.data.columns:
+                pred_values = self.data[pred_col]
+            else:
+                pred_values = real_values + self.data[f'error_{model}']
+
+            # Calculate distances
+            distances = np.abs(pred_values - real_values)
+            
+            sorted_dists = np.sort(distances)
+            ranks = np.searchsorted(sorted_dists, distances, side='right')
+            percentiles = (ranks / len(distances)) * 100
+            
+            min_val = min(real_values.min(), pred_values.min())
+            max_val = max(real_values.max(), pred_values.max())
+            margin = (max_val - min_val) * 0.05
+            
+            ax.set_xlim(min_val - margin, max_val + margin)
+            ax.set_ylim(min_val - margin, max_val + margin)
+            ax.set_aspect('equal', adjustable='box')
+            
+            ax.plot([min_val - margin, max_val + margin], [min_val - margin, max_val + margin], color='tab:blue', linewidth=2)
+            # Use rasterized=True for performance with many points
+            scatter = ax.scatter(real_values, pred_values, c=percentiles, s=50, cmap='Spectral', label='Percentile', rasterized=True)
+            ax.set_title(model)
+            
+            if idx % 4 == 0:
+                ax.set_ylabel('Predicted values')
+            if idx >= 8:
+                ax.set_xlabel('Real values')
+
+        for idx in range(len(models_to_plot), 12):
+            self.selection_fig_scatter.delaxes(axes[idx])
+
+        self.selection_fig_scatter.tight_layout()
+        
+        if scatter:
+             cbar = self.selection_fig_scatter.colorbar(scatter, ax=axes, orientation='horizontal', fraction=0.04, pad=0.06)
+             cbar.set_label("Percentile of Absolute Error")
+
+        # --- Boxplots Figure ---
+        self.selection_fig_boxplot = plt.figure(figsize=(10, 10))
+        ax_boxplot = self.selection_fig_boxplot.add_subplot(111)
+        
+        errors_data = [self.data[f'error_{col}'] for col in models_to_plot]
+        
+        ax_boxplot.boxplot(list(reversed(errors_data)), 
+                           tick_labels=[f'Model {self.selection_metrics_ids[col]}' for col in list(reversed(models_to_plot))], 
+                           patch_artist=True, vert=False)
+        
+        ax_boxplot.set_xlabel('Error', fontsize=14)
+        ax_boxplot.tick_params(axis='both', which='major', labelsize=12)
+        
+        self.selection_fig_boxplot.tight_layout()
 
     def show_model_selection_window(self):
         """Show the window to select the models to compare."""
         self.selection_window = ctk.CTkToplevel(self)
         self.selection_window.title('Select the models to compare')
+        self.selection_window.geometry("1600x900")
+        
+        # Configure grid layout
+        self.selection_window.grid_columnconfigure(0, weight=3)
+        self.selection_window.grid_columnconfigure(1, weight=1)
+        self.selection_window.grid_rowconfigure(0, weight=1)
 
-        ctk.CTkLabel(self.selection_window, text='Select two models to compare:').pack(pady=10)
+        # Left Frame for Plots
+        left_frame = ctk.CTkFrame(self.selection_window)
+        left_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        
+        # Tabview for switching plots
+        self.tabview = ctk.CTkTabview(left_frame)
+        self.tabview.pack(fill=tk.BOTH, expand=True)
+        
+        self.tabview.add("Predicted vs Real")
+        self.tabview.add("Errors Boxplot")
+        
+        # Scatter Canvas
+        self.canvas_scatter = FigureCanvasTkAgg(self.selection_fig_scatter, master=self.tabview.tab("Predicted vs Real"))
+        self.toolbar_scatter = NavToolbar(self.canvas_scatter, self.tabview.tab("Predicted vs Real"))
+        self.canvas_scatter.draw()
+        self.canvas_scatter.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        # Boxplot Canvas
+        self.canvas_boxplot = FigureCanvasTkAgg(self.selection_fig_boxplot, master=self.tabview.tab("Errors Boxplot"))
+        self.toolbar_boxplot = NavToolbar(self.canvas_boxplot, self.tabview.tab("Errors Boxplot"))
+        self.canvas_boxplot.draw()
+        self.canvas_boxplot.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        # Right Frame for Selection
+        right_frame = ctk.CTkFrame(self.selection_window)
+        right_frame.grid(row=0, column=1, sticky="nsew", padx=10, pady=10)
+
+        # Sorting Controls
+        sort_frame = ctk.CTkFrame(right_frame)
+        sort_frame.pack(fill=tk.X, pady=10, padx=5)
+        
+        ctk.CTkLabel(sort_frame, text="Sort by:").pack(side=tk.LEFT, padx=5)
+        self.sort_metric_var = ctk.StringVar(value="RMSE")
+        ctk.CTkComboBox(sort_frame, values=["RMSE", "MAE"], variable=self.sort_metric_var, command=self.update_sorting, width=80).pack(side=tk.LEFT, padx=5)
+        
+        self.sort_order_var = ctk.StringVar(value="Ascending")
+        ctk.CTkComboBox(sort_frame, values=["Ascending", "Descending"], variable=self.sort_order_var, command=self.update_sorting, width=110).pack(side=tk.LEFT, padx=5)
+
+        # --- Selection Logic ---
+        ctk.CTkLabel(right_frame, text='Select two models to compare:', font=('Helvetica', 16, 'bold')).pack(pady=10)
 
         self.model_vars = {model: tk.BooleanVar() for model in self.all_models}
 
@@ -817,23 +942,50 @@ class QuantileApp(ctk.CTk):
             if self.model_selection_button:
                 self.model_selection_button.configure(state='normal' if selected_count == 2 else 'disabled')
 
+        checkbox_frame = ctk.CTkScrollableFrame(right_frame)
+        checkbox_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
         self.model_checkboxes = {}
         for model, var in self.model_vars.items():
-            checkbox = ctk.CTkCheckBox(self.selection_window, text=model, variable=var, command=update_checkboxes)
-            checkbox.pack()
+            checkbox = ctk.CTkCheckBox(checkbox_frame, text=model, variable=var, command=update_checkboxes)
+            checkbox.pack(anchor='w', padx=10, pady=5)
             self.model_checkboxes[model] = checkbox
 
-        self.model_selection_button = ctk.CTkButton(self.selection_window, text='OK', command=self.validate_model_selection)
-        self.model_selection_button.pack(pady=10)
+        self.model_selection_button = ctk.CTkButton(right_frame, text='OK', command=self.validate_model_selection)
+        self.model_selection_button.pack(pady=20, side=tk.BOTTOM)
+        
+        update_checkboxes()
+
         self.selection_window.after(100, self.selection_window.lift)
         self.selection_window.after(100, self.selection_window.focus_force)
-        # place the window in the center of the screen
-        self.selection_window.update_idletasks()
-        width = self.selection_window.winfo_width()
-        height = self.selection_window.winfo_height()
-        x = (self.selection_window.winfo_screenwidth() // 2) - (width // 2)
-        y = (self.selection_window.winfo_screenheight() // 2) - (height // 2)
-        self.selection_window.geometry(f'+{x}+{y}')
+
+    def update_sorting(self, _=None):
+        metric = self.sort_metric_var.get()
+        order = self.sort_order_var.get()
+        
+        # Clear old canvases first to avoid issues with open figures being closed while attached to canvas
+        if hasattr(self, 'canvas_scatter'):
+            self.canvas_scatter.get_tk_widget().destroy()
+        if hasattr(self, 'toolbar_scatter'):
+            self.toolbar_scatter.destroy()
+        if hasattr(self, 'canvas_boxplot'):
+            self.canvas_boxplot.get_tk_widget().destroy()
+        if hasattr(self, 'toolbar_boxplot'):
+            self.toolbar_boxplot.destroy()
+
+        # Regenerate figures
+        self.generate_selection_figures(sort_metric=metric, sort_order=order)
+        
+        # Create new canvases
+        self.canvas_scatter = FigureCanvasTkAgg(self.selection_fig_scatter, master=self.tabview.tab("Predicted vs Real"))
+        self.toolbar_scatter = NavToolbar(self.canvas_scatter, self.tabview.tab("Predicted vs Real"))
+        self.canvas_scatter.draw()
+        self.canvas_scatter.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        self.canvas_boxplot = FigureCanvasTkAgg(self.selection_fig_boxplot, master=self.tabview.tab("Errors Boxplot"))
+        self.toolbar_boxplot = NavToolbar(self.canvas_boxplot, self.tabview.tab("Errors Boxplot"))
+        self.canvas_boxplot.draw()
+        self.canvas_boxplot.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
     def calculate_max_timesteps(self):
         """Calculate the maximum number of timesteps in the dataframe.
