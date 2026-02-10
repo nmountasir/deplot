@@ -18,7 +18,8 @@ from widgets import CTkRangeSlider, IntSpinbox, NavToolbar
 from tkcalendar import Calendar
 from tkinter import Menu
 from scipy.spatial import ConvexHull
-# from depth.multivariate.Halfspace import halfspace
+from sklearn.metrics import root_mean_squared_error, mean_absolute_error, mean_absolute_percentage_error
+from typing import Callable
 
 # Set the seaborn theme
 # sns.set_theme()
@@ -118,19 +119,26 @@ class QuantileApp(ctk.CTk):
             self.timesteps_canvas.get_tk_widget().destroy()
             self.quantile_toolbar.destroy()
             self.timesteps_toolbar.destroy()
-            # change the min and max values of the timesteps slider
+
             self.timesteps_slider.configure(from_=self.data[self.target_name].min(), to=self.data[self.target_name].max())
             self.timesteps_slider_values = (self.data[self.target_name].min(), self.data[self.target_name].max())
             self.quantile_slider.configure(from_=1, to=100)
             self.quantile_slider_value = 10
             self.timesteps_slider_label.configure(text=f'{self.target_name} range')
-            self.update_timesteps_left_entry
+            self.update_timesteps_left_entry(None)
         else:
             variables_menu = tk.Menu(self.menubar, tearoff=0)
             variables_menu.add_command(label="Select variables", command=self.show_variables_selection_window)
             variables_menu.add_command(label="Change target variable", command=self.change_target_variable)
             variables_menu.add_command(label="Change models to compare", command=lambda: self.detect_models(regenerate=False))
             self.menubar.add_cascade(label="View", menu=variables_menu)
+
+            metrics_menu = tk.Menu(self.menubar, tearoff=0)
+            metrics_menu.add_command(label="Show metrics", command=self.show_metrics_window)
+            metrics_menu.add_command(label="Calculate quantile metrics", command=self.show_calculate_metrics_window)
+            metrics_menu.add_command(label="Generate report", command=self.show_generate_report_window)
+            self.menubar.add_cascade(label="Metrics", menu=metrics_menu)
+            
             self.left_frame = ctk.CTkFrame(self, fg_color='#434343')
             self.left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
 
@@ -784,13 +792,11 @@ class QuantileApp(ctk.CTk):
             if self.individual_name not in self.data.columns:
                 self.individual_name = None
         
-        # Pre-generate figures before showing the window
         self.generate_selection_figures()
         self.show_model_selection_window()
 
     def generate_selection_figures(self, sort_metric='RMSE', sort_order='Ascending'):
         """Pre-generate the figures for the model selection window."""
-        # Close existing figures to free memory
         if hasattr(self, 'selection_fig_scatter') and self.selection_fig_scatter:
             plt.close(self.selection_fig_scatter)
         if hasattr(self, 'selection_fig_boxplot') and self.selection_fig_boxplot:
@@ -815,7 +821,17 @@ class QuantileApp(ctk.CTk):
         self.selection_fig_scatter, axes = plt.subplots(3, 4, figsize=(16, 12))
         axes = axes.flatten()
         
-        target_col = self.target_name
+        models_in_data = [col.split('error_')[1] for col in self.data.columns if 'error_' in col]
+        if models_in_data:
+            ref_model = models_in_data[0]
+            pred_candidates = [c for c in self.data.columns if ref_model in c and 'error_' not in c]
+            if pred_candidates:
+                target_col = pred_candidates[0].replace(f'_{ref_model}', '')
+            else:
+                target_col = self.target_name
+        else:
+            target_col = self.target_name
+            
         real_values = self.data[target_col]
 
         scatter = None
@@ -882,39 +898,32 @@ class QuantileApp(ctk.CTk):
         self.selection_window.title('Select the models to compare')
         self.selection_window.geometry("1600x900")
         
-        # Configure grid layout
         self.selection_window.grid_columnconfigure(0, weight=3)
         self.selection_window.grid_columnconfigure(1, weight=1)
         self.selection_window.grid_rowconfigure(0, weight=1)
 
-        # Left Frame for Plots
         left_frame = ctk.CTkFrame(self.selection_window)
         left_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
         
-        # Tabview for switching plots
         self.tabview = ctk.CTkTabview(left_frame)
         self.tabview.pack(fill=tk.BOTH, expand=True)
         
         self.tabview.add("Predicted vs Real")
         self.tabview.add("Errors Boxplot")
         
-        # Scatter Canvas
         self.canvas_scatter = FigureCanvasTkAgg(self.selection_fig_scatter, master=self.tabview.tab("Predicted vs Real"))
         self.toolbar_scatter = NavToolbar(self.canvas_scatter, self.tabview.tab("Predicted vs Real"))
         self.canvas_scatter.draw()
         self.canvas_scatter.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
-        # Boxplot Canvas
         self.canvas_boxplot = FigureCanvasTkAgg(self.selection_fig_boxplot, master=self.tabview.tab("Errors Boxplot"))
         self.toolbar_boxplot = NavToolbar(self.canvas_boxplot, self.tabview.tab("Errors Boxplot"))
         self.canvas_boxplot.draw()
         self.canvas_boxplot.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
-        # Right Frame for Selection
         right_frame = ctk.CTkFrame(self.selection_window)
         right_frame.grid(row=0, column=1, sticky="nsew", padx=10, pady=10)
 
-        # Sorting Controls
         sort_frame = ctk.CTkFrame(right_frame)
         sort_frame.pack(fill=tk.X, pady=10, padx=5)
         
@@ -963,7 +972,6 @@ class QuantileApp(ctk.CTk):
         metric = self.sort_metric_var.get()
         order = self.sort_order_var.get()
         
-        # Clear old canvases first to avoid issues with open figures being closed while attached to canvas
         if hasattr(self, 'canvas_scatter'):
             self.canvas_scatter.get_tk_widget().destroy()
         if hasattr(self, 'toolbar_scatter'):
@@ -973,10 +981,8 @@ class QuantileApp(ctk.CTk):
         if hasattr(self, 'toolbar_boxplot'):
             self.toolbar_boxplot.destroy()
 
-        # Regenerate figures
         self.generate_selection_figures(sort_metric=metric, sort_order=order)
         
-        # Create new canvases
         self.canvas_scatter = FigureCanvasTkAgg(self.selection_fig_scatter, master=self.tabview.tab("Predicted vs Real"))
         self.toolbar_scatter = NavToolbar(self.canvas_scatter, self.tabview.tab("Predicted vs Real"))
         self.canvas_scatter.draw()
@@ -1015,7 +1021,10 @@ class QuantileApp(ctk.CTk):
             self.selection_window.destroy()
             self.configure_ui()
             self.setup_plot_timesteps()
-            self.quantile_slider.set(10)
+            if self.max_timesteps < 300:
+                self.quantile_slider.set(10)
+            else:
+                self.quantile_slider.set(100)
             self.update_quantile_plot(None)
             self.save_recent_files()
             self.update_recent_files()
@@ -1119,7 +1128,6 @@ class QuantileApp(ctk.CTk):
                 return
             on_click.updating = True
             try:
-                # Réinitialiser la mise en surbrillance de la boxplot précédemment sélectionnée
                 if self.selected_box is not None:
                     self.selected_box[0].set_facecolor('none')
                     self.selected_box[0].set_hatch('///')
@@ -1168,7 +1176,7 @@ class QuantileApp(ctk.CTk):
             self.quantile_slider_entry.configure(state='disabled', fg_color='black')
             self.timesteps_slider_left.configure(state='disabled', fg_color='black')
             self.timesteps_slider_right.configure(state='disabled', fg_color='black')
-            # increase the alpha of the slider
+
             self.quantile_slider.configure(fg_color='black', progress_color=ctk.ThemeManager.theme["CTkSlider"]["fg_color"], button_color='gray')
             self.timesteps_slider.configure(fg_color='black', progress_color=ctk.ThemeManager.theme["CTkSlider"]["fg_color"], button_color='gray')
             self.simulate_button.configure(
@@ -1250,7 +1258,7 @@ class QuantileApp(ctk.CTk):
         self.last_plot_params = {'quantiles': quantiles, 'quantile_to_plot': quantile_to_plot, 'min': min, 'max': max}
         axes = []
 
-        data = self.filtered_data.copy()  # Use filtered data instead of original data
+        data = self.filtered_data.copy()
         if self.display_mode.get() == "timesteps" or quantiles > 1:
             if self.individual_name is not None:
                 if min <= 0 and max == -1:
@@ -1301,7 +1309,6 @@ class QuantileApp(ctk.CTk):
         axes.append(self.timesteps_ax.scatter(x_per, y_per, s=200, c=data_per['percentile'], cmap='Spectral'))
         axes.append(self.timesteps_ax.plot(median_per[0], median_per[1], 'x', color='black', markersize=10, alpha=0.7)[0])
 
-        # Calculate and plot the convex hull
         percentage = int(self.convex_hull_percentage.get())
         if percentage > 0:
             threshold = np.percentile(data_per['distance'], percentage)
@@ -1385,7 +1392,10 @@ class QuantileApp(ctk.CTk):
         self.title(f"DEPlot - {self.file_path} - {self.models[0]} vs {self.models[1]}")
         self.configure_ui()
         self.setup_plot_timesteps()
-        self.quantile_slider.set(10)
+        if self.max_timesteps < 300:
+            self.quantile_slider.set(10)
+        else:
+            self.quantile_slider.set(100)
         self.update_quantile_plot(None)
 
     def update_recent_files(self, file_info : dict = None):
@@ -1509,7 +1519,7 @@ class QuantileApp(ctk.CTk):
             self.update_timesteps_slider(None)
 
     def change_target_variable(self):
-        """Permet de sélectionner une nouvelle variable target et de rafraîchir les visualisations."""
+        """Allow the user to change the target variable."""
         target_window = ctk.CTkToplevel(self)
         target_window.title("Change Target Variable")
         target_window.geometry("400x200")
@@ -1522,7 +1532,7 @@ class QuantileApp(ctk.CTk):
             values=list(self.data.columns),
             command=lambda event: self.update_target_name(target_combobox.get())
         )
-        target_combobox.set(self.target_name)  # Pré-sélectionner la variable actuelle
+        target_combobox.set(self.target_name)
         target_combobox.pack(pady=10, fill=tk.X, padx=20)
 
         def confirm_target_change():
@@ -1538,6 +1548,323 @@ class QuantileApp(ctk.CTk):
         self.configure_ui()
         self.setup_plot_timesteps()
         self.update_quantile_plot(None)
+
+    def show_calculate_metrics_window(self):
+        """Show a window to calculate new error metrics."""
+        metrics_window = ctk.CTkToplevel(self)
+        metrics_window.title("Calculate New Metrics")
+        metrics_window.geometry("400x200")
+
+        ctk.CTkLabel(metrics_window, text="Select a metric to calculate new error metrics:", font=("Helvetica", 12)).pack(pady=10)
+
+        metric_var = ctk.StringVar(value="MAE")
+
+        mae_radio = ctk.CTkRadioButton(metrics_window, text="Mean Absolute Error (MAE)", variable=metric_var, value="MAE")
+        mae_radio.pack(pady=5)
+
+        rmse_radio = ctk.CTkRadioButton(metrics_window, text="Root Mean Squared Error (RMSE)", variable=metric_var, value="RMSE")
+        rmse_radio.pack(pady=5)
+
+        mape_radio = ctk.CTkRadioButton(metrics_window, text="Mean Absolute Percentage Error (MAPE)", variable=metric_var, value="MAPE")
+        mape_radio.pack(pady=5)
+
+        def calculate_and_close():
+            selected_metric = metric_var.get()
+            if selected_metric == "MAE":
+                self.calculate_new_metrics(mean_absolute_error)
+            elif selected_metric == "RMSE":
+                self.calculate_new_metrics(root_mean_squared_error)
+            elif selected_metric == "MAPE":
+                self.calculate_new_metrics(mean_absolute_percentage_error)
+            metrics_window.destroy()
+
+        ctk.CTkButton(metrics_window, text="Calculate", command=calculate_and_close).pack(pady=10)
+
+    def calculate_new_metrics(self, metric: Callable[[pd.Series], float]):
+        """ Calculate new error metrics for the selected models. 
+        To do so, for each quantile, we compute a selected metric.
+        Then, we then use the predictions of the model that has the lowest metric value for each quantile.
+        Finally, we compute the overall error metrics for the new predictions.
+        """
+        new_errors = []
+        quantile = int(self.quantile_slider.get())
+        data = self.data.copy()
+        if self.individual_name is None:
+            data['quantile'] = pd.qcut(data[self.target_name].rank(method='first'), quantile, labels=False) + 1
+        else:
+            data['quantile'] = pd.qcut(data.groupby(self.individual_name).cumcount(), quantile, labels=False) + 1
+        for i in range(1, quantile + 1):
+            data_per = data[data['quantile'] == i].drop(columns=['quantile'])
+            error_model_1 = data_per['error_' + self.models[0]]
+            error_model_2 = data_per['error_' + self.models[1]]
+            predicted_value_name = [col for col in self.data.columns if self.models[0] in col and col != f"error_{self.models[0]}"][0].split(f'_{self.models[0]}')[0]
+            metric_model_1 = metric(data_per[predicted_value_name], data_per[predicted_value_name] - error_model_1)
+            metric_model_2 = metric(data_per[predicted_value_name], data_per[predicted_value_name] - error_model_2)
+            if metric_model_1 <= metric_model_2:
+                new_errors.extend(error_model_1.tolist())
+            else:
+                new_errors.extend(error_model_2.tolist())
+        self.data['errors_combined'] = new_errors
+        messagebox.showinfo('New Metrics', f'New combined error metrics for target {self.target_name}:\n\n'
+                                        f'MAE: {mean_absolute_error(self.data[predicted_value_name], self.data[predicted_value_name] - self.data["errors_combined"]):.4f}\n'
+                                        f'RMSE: {root_mean_squared_error(self.data[predicted_value_name], self.data[predicted_value_name] - self.data["errors_combined"]):.4f}\n'
+                                        f'MAPE: {mean_absolute_percentage_error(self.data[predicted_value_name], self.data[predicted_value_name] - self.data["errors_combined"]):.4f}\n')
+
+    def show_generate_report_window(self):
+        """Show a window to generate a comparison report."""
+        report_window = ctk.CTkToplevel(self)
+        report_window.title("Generate Comparison Report")
+        report_window.geometry("500x400")
+
+        ctk.CTkLabel(report_window, text="Select models to include in the comparison report:", font=("Helvetica", 14, "bold")).pack(pady=10)
+
+        checkbox_frame = ctk.CTkScrollableFrame(report_window, height=200)
+        checkbox_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=5)
+
+        self.report_model_vars = {}
+        if not hasattr(self, 'all_models'):
+            self.all_models = [col.split('error_')[1] for col in self.data.columns if col.startswith('error_')]
+        for model in self.all_models:
+            var = tk.BooleanVar(value=(model in self.models))
+            chk = ctk.CTkCheckBox(checkbox_frame, text=model, variable=var)
+            chk.pack(anchor='w', pady=2, padx=5)
+            self.report_model_vars[model] = var
+
+        buttons_frame = ctk.CTkFrame(report_window, fg_color="transparent")
+        buttons_frame.pack(fill=tk.X, padx=20, pady=5)
+
+        def select_all():
+            for var in self.report_model_vars.values():
+                var.set(True)
+
+        def deselect_all():
+            for var in self.report_model_vars.values():
+                var.set(False)
+
+        ctk.CTkButton(buttons_frame, text="Select all", command=select_all, width=100).pack(side=tk.LEFT, padx=5)
+        ctk.CTkButton(buttons_frame, text="Deselect all", command=deselect_all, width=100).pack(side=tk.RIGHT, padx=5)
+
+        def generate_and_close():
+            selected_models = [model for model, var in self.report_model_vars.items() if var.get()]
+            
+            if len(selected_models) < 2:
+                messagebox.showerror("Error", "Please select at least two models for comparison.")
+                return
+            
+            self.generate_report(selected_models)
+            report_window.destroy()
+
+        ctk.CTkButton(report_window, text="Generate Report", command=generate_and_close, fg_color="green", hover_color="darkgreen").pack(pady=15)
+
+    def generate_report(self, models: list[str] = None):
+        """Generate a comparison report for the selected models."""
+        if models is None:
+            models = self.models
+
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv")],
+            title="Save Comparison Report As",
+            initialfile="comparison_report.csv"
+        )
+        if not file_path:
+            return
+
+        excluded = [col for col in self.data.columns if [col for col in self.data.columns if self.models[0] in col and col != f"error_{self.models[0]}"][0].split(f'_{self.models[0]}')[0] in col]
+        
+        domain_vars = sorted(list(set([
+            col for col in self.data.columns 
+            if col not in excluded 
+            and 'error_' not in col 
+            and not col.startswith('Unnamed')
+        ])))
+
+        if not domain_vars:
+            messagebox.showwarning("Warning", "No domain variables found for analysis.")
+            return
+
+        results = []
+        n_quantiles = int(self.quantile_slider.get())
+        
+        metrics_map = {
+            "RMSE": root_mean_squared_error,
+            "MAE": mean_absolute_error
+        }
+
+        y_true_global = self.data[[col for col in self.data.columns if models[0] in col and col != f"error_{models[0]}"][0].split(f'_{models[0]}')[0]]
+        print([col for col in self.data.columns if models[0] in col and col != f"error_{models[0]}"][0].split(f'_{models[0]}')[0])
+        y_pred_global_m0 = y_true_global + self.data[f'error_{models[0]}']
+        y_pred_global_m1 = y_true_global + self.data[f'error_{models[1]}']
+
+        base_metrics = {}
+        for metric_name, metric_func in metrics_map.items():
+            base_metrics[f"{models[0]}_{metric_name}"] = metric_func(y_true_global, y_pred_global_m0)
+            base_metrics[f"{models[1]}_{metric_name}"] = metric_func(y_true_global, y_pred_global_m1)
+
+        for var_name in domain_vars:
+            row_data = {"Variable": var_name}
+            if var_name == self.target_name:
+                temp_df = self.data[[var_name, f'error_{models[0]}', f'error_{models[1]}']].copy()
+            else:
+                temp_df = self.data[[self.target_name, var_name, f'error_{models[0]}', f'error_{models[1]}']].copy()
+            
+            is_numeric = pd.api.types.is_numeric_dtype(temp_df[var_name])
+            
+            try:
+                if is_numeric and temp_df[var_name].nunique() > n_quantiles:
+                    temp_df['bucket'] = pd.qcut(temp_df[var_name].rank(method='first'), n_quantiles, labels=False)
+                else:
+                    # create bucket based on unique values
+                    temp_df['bucket'] = temp_df[var_name].astype('category').cat.codes
+            except Exception as e:
+                print(f"Segmentation error on {var_name}: {e}")
+                continue
+
+            for metric_name, metric_func in metrics_map.items():
+                y_true_segments = []
+                y_pred_hybrid_segments = []
+
+                for _, group in temp_df.groupby('bucket'):
+                    y_t = group[self.target_name]
+                    y_p0 = y_t + group[f'error_{models[0]}']
+                    y_p1 = y_t + group[f'error_{models[1]}']
+
+                    score0 = metric_func(y_t, y_p0)
+                    score1 = metric_func(y_t, y_p1)
+
+                    y_true_segments.extend(y_t.tolist())
+                    if score0 < score1:
+                        y_pred_hybrid_segments.extend(y_p0.tolist())
+                    else:
+                        y_pred_hybrid_segments.extend(y_p1.tolist())
+
+                hybrid_score = metric_func(y_true_segments, y_pred_hybrid_segments)
+                gain = ((min(base_metrics[f"{models[0]}_{metric_name}"], base_metrics[f"{models[1]}_{metric_name}"]) - hybrid_score) /
+                        min(base_metrics[f"{models[0]}_{metric_name}"], base_metrics[f"{models[1]}_{metric_name}"])) * 100
+                
+                m0_score = base_metrics[f"{models[0]}_{metric_name}"]
+                m1_score = base_metrics[f"{models[1]}_{metric_name}"]
+
+                row_data[f"Hybrid_{metric_name}"] = hybrid_score
+                row_data[f"Gain_{metric_name} (%)"] = gain
+                row_data[f"{models[0]}_{metric_name}"] = m0_score
+                row_data[f"{models[1]}_{metric_name}"] = m1_score
+
+            results.append(row_data)
+
+        if results:
+            df_results = pd.DataFrame(results)
+            cols_order = ['Variable'] + [c for c in df_results.columns if c != 'Variable']
+            df_results = df_results[cols_order]
+            
+            try:
+                df_results.to_csv(file_path, index=False, sep=';', decimal=',') # Format excel-friendly
+                messagebox.showinfo("Success", f"Report generated successfully:\n{file_path}")
+                self.show_hybrid_rmse_plot(df_results)
+            except Exception as e:
+                messagebox.showerror("Error", f"Unable to save the file:\n{e}")
+        else:
+            messagebox.showinfo("Information", "No results generated.")
+
+    def show_hybrid_rmse_plot(self, df_results):
+        """Display a visual plot of Hybrid_RMSE or Hybrid_MAE results."""
+        available_metrics = []
+        if 'Hybrid_RMSE' in df_results.columns:
+            available_metrics.append('Hybrid_RMSE')
+        if 'Hybrid_MAE' in df_results.columns:
+            available_metrics.append('Hybrid_MAE')
+        if 'Gain_RMSE (%)' in df_results.columns:
+            available_metrics.append('Gain_RMSE (%)')
+        if 'Gain_MAE (%)' in df_results.columns:
+            available_metrics.append('Gain_MAE (%)')
+
+        if not available_metrics:
+            return
+
+        plot_window = ctk.CTkToplevel(self)
+        plot_window.title("Metric Analysis by Variable")
+        plot_window.geometry("1000x600")
+
+        controls_frame = ctk.CTkFrame(plot_window)
+        controls_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        ctk.CTkLabel(controls_frame, text="Metric:").pack(side=tk.LEFT, padx=5)
+        metric_var = ctk.StringVar(value=available_metrics[0])
+        ctk.CTkComboBox(controls_frame, values=available_metrics, variable=metric_var, command=lambda _: update_plot()).pack(side=tk.LEFT, padx=5)
+
+        ctk.CTkLabel(controls_frame, text="Sort by:").pack(side=tk.LEFT, padx=5)
+        sort_var = ctk.StringVar(value="Ascending")
+        ctk.CTkComboBox(controls_frame, values=["Ascending", "Descending"], variable=sort_var, command=lambda _: update_plot()).pack(side=tk.LEFT, padx=5)
+        
+        fig, ax = plt.subplots(figsize=(10, 6))
+        fig.set_facecolor('#4a4a4a')
+        ax.tick_params(colors='white', labelsize=12)
+        ax.xaxis.label.set_color('white')
+        ax.yaxis.label.set_color('white')
+        ax.yaxis.label.set_fontsize(14)
+        ax.title.set_color('white')
+        for spine in ax.spines.values():
+            spine.set_color('white')
+        
+        canvas = FigureCanvasTkAgg(fig, master=plot_window)
+        toolbar = NavToolbar(canvas, plot_window)
+        toolbar.update()
+        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+        def update_plot(_=None):
+            order = sort_var.get()
+            ascending = (order == "Ascending")
+            
+            if metric_var.get() not in df_results.columns:
+                return
+
+            sorted_df = df_results.sort_values(by=metric_var.get(), ascending=ascending)
+            
+            ax.clear()
+            
+            variables = sorted_df['Variable'].tolist()
+            values = sorted_df[metric_var.get()].tolist()
+            
+            ax.bar(variables, values, color='#1f77b4')
+            
+            ax.set_ylabel(metric_var.get(), fontsize=14)
+            
+            ax.yaxis.label.set_color('white')
+            ax.title.set_color('white')
+            
+            ax.set_xticks(range(len(variables)))
+            ax.set_xticklabels(variables, rotation=45, ha='right')
+            
+            fig.tight_layout()
+            canvas.draw()
+        
+        update_plot()
+
+    def show_metrics_window(self):
+        """Show a window with the metrics for the selected models."""
+        metrics_window = ctk.CTkToplevel(self)
+        metrics_window.title("Metrics")
+        metrics_window.geometry("400x300")
+
+        quantile = int(self.quantile_slider.get())
+        data = self.data.copy()
+        if self.individual_name is None:
+            data['quantile'] = pd.qcut(data[self.target_name].rank(method='first'), quantile, labels=False) + 1
+        else:
+            data['quantile'] = pd.qcut(data.groupby(self.individual_name).cumcount(), quantile, labels=False) + 1
+
+        metrics_text = ""
+        for model in self.models:
+            mae = mean_absolute_error(data[self.target_name], data[self.target_name] + data['error_' + model])
+            rmse = root_mean_squared_error(data[self.target_name], data[self.target_name] + data['error_' + model])
+            mape = mean_absolute_percentage_error(data[self.target_name], data[self.target_name] + data['error_' + model])
+            metrics_text += f"Metrics for {model}:\n"
+            metrics_text += f"MAE: {mae:.4f}\n"
+            metrics_text += f"RMSE: {rmse:.4f}\n"
+            metrics_text += f"MAPE: {mape:.4f}\n\n"
+
+        metrics_label = ctk.CTkLabel(metrics_window, text=metrics_text, font=("Helvetica", 12), justify=tk.LEFT)
+        metrics_label.pack(pady=10, padx=10)
 
 app = QuantileApp()
 app.mainloop()

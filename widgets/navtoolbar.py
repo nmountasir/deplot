@@ -64,7 +64,7 @@ class NavToolbar(NavigationToolbar2Tk):
             fig.set_facecolor('white')
             for spine in axis.spines.values():
                 spine.set_edgecolor('black')
-            axis.title.set_color('black')
+            # axis.title.set_color('black')
             axis.xaxis.label.set_color('black')
             axis.yaxis.label.set_color('black')
             axis.tick_params(axis='x', colors='black')
@@ -84,7 +84,7 @@ class NavToolbar(NavigationToolbar2Tk):
             fig.set_facecolor('#4a4a4a')
             for spine in axis.spines.values():
                 spine.set_edgecolor('white')
-            axis.title.set_color('white')
+            # axis.title.set_color('white')
             axis.tick_params(axis='x', colors='white')
             axis.tick_params(axis='y', colors='white')
             if len(fig.get_axes()) > 1:
